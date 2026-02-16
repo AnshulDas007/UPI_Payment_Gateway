@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# PDF requirement document
+*.pdf
+
+# Virtual environment
+venv/
+env/
+.env/
+ENV/
+
+# Generated QR codes and temp files
+*.png
+qr.txt
+_pdf_content.txt
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# OS files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Byte-compiled / optimized
+*.pyo
+*.pdb
+
+# Distribution / packaging
+*.tar.gz
+*.zip
