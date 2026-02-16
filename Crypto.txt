@@ -1,0 +1,543 @@
+/*
+  Centralized UPI Payment Gateway with Blockchain, LWC (SPECK) and Quantum Cryptography
+  ======================================================================
+  This complete solution implements:
+  - Merchant and User registration with IDs generated via SHA-256 (truncated to 16 hex digits)
+  - Encryption/decryption of Merchant ID using a SPECK-like lightweight cipher (LWC)
+  - QR code generation (simulation: writing QR data to file "qr.txt") and scanning
+  - Socket communication among three separate processes (simulating three laptops) for:
+       • Bank (listening on port 5000)
+       • UPI Machine (listening on port 5001)
+       • User (client mode)
+  - Blockchain ledger maintenance at the Bank
+  - Dummy simulation of quantum cryptography using a placeholder for Shor’s Algorithm
+*/
+
+#include <iostream>
+#include <sstream>
+#include <fstream>
+#include <iomanip>
+#include <vector>
+#include <string>
+#include <ctime>
+#include <chrono>
+#include <thread>
+#include <cstring>
+#include <cstdlib>
+
+// POSIX sockets
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+// ----------------------- SHA-256 Implementation -----------------------
+// This is a self-contained SHA-256 implementation.
+// (Adapted from public domain sources for educational purposes.)
+
+#include <cstring>
+#include <stdint.h>
+
+class SHA256 {
+public:
+    SHA256() { init(); }
+
+    void update(const unsigned char *data, size_t len) {
+        for (size_t i = 0; i < len; ++i) {
+            dataBuffer[dataLen++] = data[i];
+            if (dataLen == 64) {
+                transform(dataBuffer);
+                bitLen += 512;
+                dataLen = 0;
+            }
+        }
+    }
+
+    void final(unsigned char hash[32]) {
+        size_t i = dataLen;
+        // Pad whatever data is left in the buffer.
+        if (dataLen < 56) {
+            dataBuffer[i++] = 0x80;
+            while (i < 56)
+                dataBuffer[i++] = 0x00;
+        } else {
+            dataBuffer[i++] = 0x80;
+            while (i < 64)
+                dataBuffer[i++] = 0x00;
+            transform(dataBuffer);
+            memset(dataBuffer, 0, 56);
+        }
+        // Append to the padding the total message's length in bits and transform.
+        bitLen += dataLen * 8;
+        for (int j = 7; j >= 0; --j) {
+            dataBuffer[i++] = bitLen >> (j * 8);
+        }
+        transform(dataBuffer);
+        // Since this implementation uses little endian byte ordering and SHA uses big endian,
+        // reverse all the bytes when copying the final state to the output hash.
+        for (i = 0; i < 4; ++i) {
+            for (int j = 0; j < 8; ++j) {
+                hash[i + (j * 4)] = (state[j] >> (24 - i * 8)) & 0x000000ff;
+            }
+        }
+    }
+
+    std::string toString(const unsigned char hash[32]) {
+        std::stringstream ss;
+        for (int i = 0; i < 32; ++i)
+            ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+        return ss.str();
+    }
+
+private:
+    unsigned char dataBuffer[64];
+    uint32_t dataLen;
+    uint64_t bitLen;
+    uint32_t state[8];
+
+    void init() {
+        dataLen = 0;
+        bitLen = 0;
+        // Initialize hash values:
+        state[0] = 0x6a09e667;
+        state[1] = 0xbb67ae85;
+        state[2] = 0x3c6ef372;
+        state[3] = 0xa54ff53a;
+        state[4] = 0x510e527f;
+        state[5] = 0x9b05688c;
+        state[6] = 0x1f83d9ab;
+        state[7] = 0x5be0cd19;
+    }
+
+    static uint32_t rotr(uint32_t x, uint32_t n) {
+        return (x >> n) | (x << (32 - n));
+    }
+
+    void transform(const unsigned char data[64]) {
+        static const uint32_t k[64] = {
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+            0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+            0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+            0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+            0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+            0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+            0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+            0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+        };
+
+        uint32_t m[64];
+        for (uint32_t i = 0, j = 0; i < 16; ++i, j += 4)
+            m[i] = (data[j] << 24) | (data[j + 1] << 16) | (data[j + 2] << 8) | (data[j + 3]);
+        for (uint32_t i = 16; i < 64; ++i) {
+            uint32_t s0 = rotr(m[i - 15], 7) ^ rotr(m[i - 15], 18) ^ (m[i - 15] >> 3);
+            uint32_t s1 = rotr(m[i - 2], 17) ^ rotr(m[i - 2], 19) ^ (m[i - 2] >> 10);
+            m[i] = m[i - 16] + s0 + m[i - 7] + s1;
+        }
+
+        uint32_t a = state[0], b = state[1], c = state[2], d = state[3],
+                 e = state[4], f = state[5], g = state[6], h = state[7];
+
+        for (uint32_t i = 0; i < 64; ++i) {
+            uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+            uint32_t ch = (e & f) ^ ((~e) & g);
+            uint32_t temp1 = h + S1 + ch + k[i] + m[i];
+            uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+            uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            uint32_t temp2 = S0 + maj;
+            h = g;
+            g = f;
+            f = e;
+            e = d + temp1;
+            d = c;
+            c = b;
+            b = a;
+            a = temp1 + temp2;
+        }
+
+        state[0] += a;
+        state[1] += b;
+        state[2] += c;
+        state[3] += d;
+        state[4] += e;
+        state[5] += f;
+        state[6] += g;
+        state[7] += h;
+    }
+};
+
+std::string sha256(const std::string &input) {
+    unsigned char hash[32];
+    SHA256 ctx;
+    ctx.update(reinterpret_cast<const unsigned char*>(input.c_str()), input.size());
+    ctx.final(hash);
+    return ctx.toString(hash);
+}
+
+// Helper: truncate a SHA256 hex string (64 characters) to 16 hex digits
+std::string truncateHash(const std::string &hashStr) {
+    if (hashStr.size() < 16)
+        return hashStr;
+    return hashStr.substr(0, 16);
+}
+
+// ----------------------- Lightweight Cryptography (SPECK-like) -----------------------
+
+// We implement a SPECK64/128-like cipher.
+// Our message is 64 bits (16 hex digits). We view it as two 32-bit words.
+struct Block {
+    uint32_t v0;
+    uint32_t v1;
+};
+
+// Rotation helper functions (32-bit)
+uint32_t ROTL32(uint32_t x, int r) {
+    return (x << r) | (x >> (32 - r));
+}
+uint32_t ROTR32(uint32_t x, int r) {
+    return (x >> r) | (x << (32 - r));
+}
+
+/*
+  The following functions implement 32 rounds of a SPECK64/128-like encryption.
+  A fixed 128-bit key is used (represented as four 32-bit words).
+  Note: This is a simplified version intended for instructional purposes.
+*/
+void speck64_128_encrypt(const uint32_t key[4], const Block &pt, Block &ct) {
+    uint32_t x = pt.v0, y = pt.v1;
+    uint32_t rk[32];
+    uint32_t l[3];
+    rk[0] = key[0];
+    l[0] = key[1];
+    l[1] = key[2];
+    l[2] = key[3];
+    for (int i = 0; i < 31; i++) {
+        uint32_t tmp = (ROTR32(l[i % 3], 8) + rk[i]) ^ i;
+        rk[i+1] = ROTL32(rk[i], 3) ^ tmp;
+        l[(i+3) % 3] = tmp;
+    }
+    for (int i = 0; i < 32; i++) {
+        x = (ROTR32(x, 8) + y) ^ rk[i];
+        y = ROTL32(y, 3) ^ x;
+    }
+    ct.v0 = x;
+    ct.v1 = y;
+}
+
+// For decryption, we reverse the rounds.
+// (The inverse operations are carefully applied; this implementation is provided for demonstration.)
+void speck64_128_decrypt(const uint32_t key[4], const Block &ct, Block &pt) {
+    uint32_t rk[32];
+    uint32_t l[3];
+    rk[0] = key[0];
+    l[0] = key[1];
+    l[1] = key[2];
+    l[2] = key[3];
+    for (int i = 0; i < 31; i++) {
+        uint32_t tmp = (ROTR32(l[i % 3], 8) + rk[i]) ^ i;
+        rk[i+1] = ROTL32(rk[i], 3) ^ tmp;
+        l[(i+3) % 3] = tmp;
+    }
+    uint32_t x = ct.v0, y = ct.v1;
+    for (int i = 31; i >= 0; i--) {
+        // Inverse round:
+        y = ROTR32(y ^ x, 3);
+        x = ROTL32((x ^ rk[i]) - y, 8);
+    }
+    pt.v0 = x;
+    pt.v1 = y;
+}
+
+// Convert a 16-character hex string into a Block (two 32-bit words)
+Block hexStringToBlock(const std::string &hex) {
+    Block block;
+    std::stringstream ss;
+    ss << std::hex << hex.substr(0, 8);
+    ss >> block.v0;
+    ss.clear();
+    ss << std::hex << hex.substr(8, 8);
+    ss >> block.v1;
+    return block;
+}
+
+// Convert a Block into a 16-character hex string (each 32-bit word printed as 8 hex digits)
+std::string blockToHexString(const Block &block) {
+    std::stringstream ss;
+    ss << std::hex << std::setw(8) << std::setfill('0') << block.v0;
+    ss << std::hex << std::setw(8) << std::setfill('0') << block.v1;
+    return ss.str();
+}
+
+// ----------------------- QR Code Generation (Simulation) -----------------------
+
+// In a real implementation you could call a QR code generation library.
+// For this assignment we simulate by writing the encrypted Merchant ID to a file.
+void generateQRCode(const std::string &encryptedMID) {
+    std::ofstream qrFile("qr.txt");
+    if (qrFile.is_open()) {
+        qrFile << "QR Code Data (Encrypted Merchant ID): " << encryptedMID << std::endl;
+        qrFile.close();
+        std::cout << "QR Code generated and saved to qr.txt" << std::endl;
+    } else {
+        std::cerr << "Unable to open qr.txt for writing." << std::endl;
+    }
+}
+
+// ----------------------- Blockchain Ledger -----------------------
+
+struct BlockChainBlock {
+    std::string transactionID;
+    std::string previousHash;
+    std::string timestamp;
+    std::string details;
+};
+
+std::vector<BlockChainBlock> blockchain;
+
+void addBlock(const std::string &transactionID, const std::string &details) {
+    std::string prevHash = (blockchain.empty() ? "0" : blockchain.back().transactionID);
+    std::time_t now = std::time(nullptr);
+    std::string ts = std::to_string(now);
+    BlockChainBlock block = { transactionID, prevHash, ts, details };
+    blockchain.push_back(block);
+    std::cout << "Block added to blockchain. Transaction ID: " << transactionID << std::endl;
+}
+
+// ----------------------- Quantum Cryptography Simulation -----------------------
+
+// Dummy simulation of quantum attack (Shor’s Algorithm) vulnerability test on the PIN.
+// In a real implementation, you would integrate a quantum cryptographic library.
+void simulateQuantumAttack(const std::string &pin) {
+    std::cout << "Simulating quantum attack on PIN " << pin << "..." << std::endl;
+    std::cout << "Quantum attack simulation complete: PIN may be vulnerable." << std::endl;
+}
+
+// ----------------------- Socket Communication Functions -----------------------
+
+// BANK: Acts as central server on port 5000.
+void bankServer() {
+    int server_fd, new_socket;
+    struct sockaddr_in address;
+    int opt = 1;
+    int addrlen = sizeof(address);
+    const int PORT = 5000;
+
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("Bank socket failed");
+        exit(EXIT_FAILURE);
+    }
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("Bank setsockopt");
+        exit(EXIT_FAILURE);
+    }
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY; // Listen on all interfaces
+    address.sin_port = htons(PORT);
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("Bank bind failed");
+        exit(EXIT_FAILURE);
+    }
+    if (listen(server_fd, 3) < 0) {
+        perror("Bank listen");
+        exit(EXIT_FAILURE);
+    }
+    std::cout << "Bank server listening on port " << PORT << std::endl;
+    while (true) {
+        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+            perror("Bank accept");
+            exit(EXIT_FAILURE);
+        }
+        char buffer[1024] = {0};
+        int valread = read(new_socket, buffer, 1024);
+        std::string received(buffer);
+        std::cout << "Bank received transaction details: " << received << std::endl;
+        // Expected format: "UID|MID|MMID|Amount|PIN|"
+        std::istringstream iss(received);
+        std::string UID, MID, MMID, Amount, PIN;
+        if (std::getline(iss, UID, '|') && std::getline(iss, MID, '|') &&
+            std::getline(iss, MMID, '|') && std::getline(iss, Amount, '|') &&
+            std::getline(iss, PIN, '|')) {
+            simulateQuantumAttack(PIN);
+            // For demonstration, we assume the transaction is valid.
+            std::string txnData = UID + MID + Amount + std::to_string(std::time(nullptr));
+            std::string txnHash = truncateHash(sha256(txnData));
+            addBlock(txnHash, received);
+            std::string response = "Transaction Approved, Txn ID: " + txnHash;
+            send(new_socket, response.c_str(), response.size(), 0);
+        } else {
+            std::string response = "Transaction Failed: Invalid Data Format";
+            send(new_socket, response.c_str(), response.size(), 0);
+        }
+        close(new_socket);
+    }
+}
+
+// UPI MACHINE: Acts as intermediary between User and Bank.
+// – First it prompts for the merchant’s MID, encrypts it and “generates” the QR code.
+// – Then it listens on port 5001 for incoming user transactions.
+void upiMachineServer() {
+    std::cout << "Enter Merchant ID (16 hex digits) for QR Code generation: ";
+    std::string merchantID;
+    std::cin >> merchantID;
+    // Encrypt the MID using SPECK:
+    Block plainBlock = hexStringToBlock(merchantID);
+    uint32_t SPECK_KEY[4] = { 0x19181110, 0x11100905, 0x09081105, 0x01020203 };
+    Block cipherBlock;
+    speck64_128_encrypt(SPECK_KEY, plainBlock, cipherBlock);
+    std::string encryptedMID = blockToHexString(cipherBlock);
+    std::cout << "Encrypted Merchant ID to embed in QR Code: " << encryptedMID << std::endl;
+    generateQRCode(encryptedMID);
+
+    int server_fd, new_socket;
+    struct sockaddr_in address;
+    int opt = 1;
+    int addrlen = sizeof(address);
+    const int PORT = 5001;
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("UPI socket failed");
+        exit(EXIT_FAILURE);
+    }
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("UPI setsockopt");
+        exit(EXIT_FAILURE);
+    }
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY; // Listen on any interface
+    address.sin_port = htons(PORT);
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("UPI bind failed");
+        exit(EXIT_FAILURE);
+    }
+    if (listen(server_fd, 3) < 0) {
+        perror("UPI listen");
+        exit(EXIT_FAILURE);
+    }
+    std::cout << "UPI Machine server listening on port " << PORT << std::endl;
+    while (true) {
+        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+            perror("UPI accept");
+            exit(EXIT_FAILURE);
+        }
+        char buffer[1024] = {0};
+        int valread = read(new_socket, buffer, 1024);
+        std::string userData(buffer);
+        std::cout << "UPI Machine received data from User: " << userData << std::endl;
+        // Expected format from User: "UID|MMID|Amount|PIN|ScannedEncryptedMID|"
+        std::istringstream iss(userData);
+        std::string UID, MMID, Amount, PIN, scannedEncryptedMID;
+        if (std::getline(iss, UID, '|') && std::getline(iss, MMID, '|') &&
+            std::getline(iss, Amount, '|') && std::getline(iss, PIN, '|') &&
+            std::getline(iss, scannedEncryptedMID, '|')) {
+            // Decrypt the scanned encrypted MID to recover the original MID.
+            Block encryptedBlock = hexStringToBlock(scannedEncryptedMID);
+            Block decryptedBlock;
+            speck64_128_decrypt(SPECK_KEY, encryptedBlock, decryptedBlock);
+            std::string originalMID = blockToHexString(decryptedBlock);
+            std::cout << "Decrypted Merchant ID from scanned data: " << originalMID << std::endl;
+            // Forward complete transaction details to Bank on port 5000.
+            int bank_sock = 0;
+            struct sockaddr_in bank_address;
+            if ((bank_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+                std::cout << "UPI: Socket creation error for Bank connection." << std::endl;
+                exit(EXIT_FAILURE);
+            }
+            bank_address.sin_family = AF_INET;
+            bank_address.sin_port = htons(5000);
+            if (inet_pton(AF_INET, "127.0.0.1", &bank_address.sin_addr) <= 0) {
+                std::cout << "UPI: Invalid Bank address" << std::endl;
+                exit(EXIT_FAILURE);
+            }
+            if (connect(bank_sock, (struct sockaddr *)&bank_address, sizeof(bank_address)) < 0) {
+                std::cout << "UPI: Connection to Bank failed" << std::endl;
+                exit(EXIT_FAILURE);
+            }
+            // Prepare data for Bank: "UID|originalMID|MMID|Amount|PIN|"
+            std::string forwardData = UID + "|" + originalMID + "|" + MMID + "|" + Amount + "|" + PIN + "|";
+            send(bank_sock, forwardData.c_str(), forwardData.size(), 0);
+            char bankBuffer[1024] = {0};
+            int bankValread = read(bank_sock, bankBuffer, 1024);
+            std::string bankResponse(bankBuffer);
+            close(bank_sock);
+            // Return the Bank response back to the User.
+            send(new_socket, bankResponse.c_str(), bankResponse.size(), 0);
+        } else {
+            std::string response = "Invalid data format received from User.";
+            send(new_socket, response.c_str(), response.size(), 0);
+        }
+        close(new_socket);
+    }
+}
+
+// USER: Acts as client connecting to UPI Machine on port 5001.
+// The user simulates scanning the QR code and then enters transaction details.
+void userClient() {
+    std::cout << "Enter scanned encrypted Merchant ID (from QR code): ";
+    std::string scannedEncryptedMID;
+    std::cin >> scannedEncryptedMID;
+    
+    std::string UID, mobile, MMID, Amount, PIN;
+    std::cout << "Enter your UID: ";
+    std::cin >> UID;
+    std::cout << "Enter your mobile number: ";
+    std::cin >> mobile;
+    // Generate MMID using SHA256 of (UID+mobile) and truncating
+    MMID = truncateHash(sha256(UID + mobile));
+    std::cout << "Generated MMID: " << MMID << std::endl;
+    std::cout << "Enter Transaction Amount: ";
+    std::cin >> Amount;
+    std::cout << "Enter your PIN: ";
+    std::cin >> PIN;
+    // Compose the message: "UID|MMID|Amount|PIN|scannedEncryptedMID|"
+    std::string message = UID + "|" + MMID + "|" + Amount + "|" + PIN + "|" + scannedEncryptedMID + "|";
+    
+    int sock = 0;
+    struct sockaddr_in serv_addr;
+    const int PORT = 5001;
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        std::cout << "User: Socket creation error" << std::endl;
+        return;
+    }
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(PORT);
+    if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0) {
+        std::cout << "User: Invalid address" << std::endl;
+        return;
+    }
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        std::cout << "User: Connection to UPI Machine Failed" << std::endl;
+        return;
+    }
+    send(sock, message.c_str(), message.size(), 0);
+    char buffer[1024] = {0};
+    int valread = read(sock, buffer, 1024);
+    std::string response(buffer);
+    std::cout << "Response from UPI Machine/Bank: " << response << std::endl;
+    close(sock);
+}
+
+// ----------------------- Main -----------------------
+
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cout << "Usage: ./project [bank | upi | user]" << std::endl;
+        return 1;
+    }
+    std::string role = argv[1];
+    if (role == "bank") {
+        bankServer();
+    } else if (role == "upi") {
+        upiMachineServer();
+    } else if (role == "user") {
+        userClient();
+    } else {
+        std::cout << "Invalid role provided. Use: bank, upi, or user." << std::endl;
+    }
+    return 0;
+}
