@@ -1,6 +1,6 @@
 # Project Requirements — Centralized UPI Payment Gateway
 
-> **Course:** Cryptography (BITS F463) | **Weightage:** 15% | **Institution:** BITS Pilani
+> **Domain:** Cryptography & Network Security
 
 ---
 

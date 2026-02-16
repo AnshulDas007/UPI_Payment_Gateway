@@ -1,6 +1,6 @@
 # Centralized UPI Payment Gateway
 
-> **Cryptography (BITS F463) — Term Project**
+> **A Secure Digital Payment System**
 
 A secure UPI (Unified Payments Interface) payment gateway simulation integrating **Blockchain**, **SHA-256**, **Lightweight Cryptography (SPECK Cipher)**, and **Quantum Cryptography (Shor's Algorithm)** to demonstrate modern and post-quantum security concepts in digital payment systems.
 
@@ -161,4 +161,4 @@ A standalone module demonstrates how Shor's Algorithm can factor RSA moduli, rec
 
 ## License
 
-This project is developed as part of the Cryptography (BITS F463) course at BITS Pilani, Hyderabad Campus. For educational purposes only.
+This project is developed for educational purposes only.
