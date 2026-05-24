@@ -145,19 +145,7 @@ Every valid transaction is recorded as a block containing: Transaction ID (SHA-2
 ### Shor's Algorithm (Quantum Vulnerability)
 A standalone module demonstrates how Shor's Algorithm can factor RSA moduli, recover private keys, and decrypt sensitive data — highlighting the need for quantum-resistant cryptography in payment systems.
 
----
 
-## Team Members
-
-| Name | ID |
-|------|-----|
-| Nuthan Venkata Sai Gandikota | 2021A4PS3065H |
-| Anshul Das | 2022A1PS1683H |
-| Abhinav Ganta | 2022A7PS0151H |
-| Aakash Guduru | 2021A4PS0797H |
-| Visswaak Reddi Theepireddy | 2022A8PS0820H |
-
----
 
 ## License
 
